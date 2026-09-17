@@ -1,0 +1,19 @@
+# Tooling scratch
+.playwright-cli/
+.impeccable/
+.claude/settings.local.json
+.vercel/
+
+# Python bytecode from serve.py
+__pycache__/
+*.pyc
+
+# Node / editors / OS
+node_modules/
+*.log
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*

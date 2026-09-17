@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>R12 eReferral Console</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23516b48'/%3E%3Cpath d='M9 22V10h5.5a3.5 3.5 0 0 1 1.2 6.8L18.8 22h-3l-2.8-5H11.7v5H9zm2.7-7.2h2.6a1.6 1.6 0 0 0 0-3.2h-2.6v3.2z' fill='%23fff'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Newsreader:opsz,wght@6..72,400;6..72,600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="../css/app.css">
+</head>
+<body>
+  <a class="skip" href="#outlet">Skip to content</a>
+
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand__mark" aria-hidden="true">R12</span>
+        <span class="brand__text">
+          <strong>eReferral Console</strong>
+          <small>PH FHIR Connectathon</small>
+        </span>
+      </div>
+
+      <nav class="nav" aria-label="Main">
+        <a class="nav__link" data-nav href="#/">Dashboard</a>
+        <a class="nav__link nav__link--accent" data-nav href="#/demo">Guided demo</a>
+        <p class="nav__group">Registries</p>
+        <a class="nav__link" data-nav href="#/facilities">Facilities</a>
+        <a class="nav__link" data-nav href="#/practitioners">Practitioners</a>
+        <a class="nav__link" data-nav href="#/patients">Patients</a>
+        <p class="nav__group">Workflow</p>
+        <a class="nav__link" data-nav href="#/referrals">Referrals</a>
+        <p class="nav__group">System</p>
+        <a class="nav__link" data-nav href="#/settings">Settings &amp; log</a>
+      </nav>
+
+      <p class="sidebar__foot">
+        Live calls to the Connectathon CDR. No data is stored anywhere but the server
+        and this browser.
+      </p>
+    </aside>
+
+    <main class="main" id="outlet" tabindex="-1"></main>
+  </div>
+
+  <script type="module" src="../js/app.js"></script>
+</body>
+</html>
