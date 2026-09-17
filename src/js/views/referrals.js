@@ -24,8 +24,10 @@ import {
   progressStrip,
   identifierOf,
   shortDate,
-  confirmDialog
+  confirmDialog,
+  kvList
 } from '../ui.js';
+import { demographics, patientLine, vitalsCard } from '../patientCard.js';
 
 // ---- list ----
 
@@ -123,10 +125,21 @@ export const list = {
           ? await wf.incomingReferrals(myFacilityId, filters())
           : await fhir.search(
               'ServiceRequest',
-              { _count: 20, _sort: '-_lastUpdated', ...filters() },
+              {
+                _count: 20,
+                _sort: '-_lastUpdated',
+                _include: wf.REFERRAL_INCLUDES,
+                ...filters()
+              },
               { includeAll: scope.checked }
             );
-        const rows = fhir.entries(bundle);
+        // `_include` puts Patients and Organizations in the same Bundle, so the rows come
+        // from the matches only and the rest becomes a lookup table.
+        const rows = fhir.matches(bundle);
+        const byRef = fhir.byReference(fhir.included(bundle));
+        // Names, never `Organization/24729` — the reference stays in the raw JSON views.
+        const orgCell = (reference) =>
+          el('span', { text: wf.describe(byRef.get(reference)) || 'Unknown facility' });
         replace(
           results,
           !incoming && scope.checked ? scopeWarning() : null,
@@ -149,18 +162,22 @@ export const list = {
               {
                 key: 'subject',
                 label: 'Patient',
-                render: (r) => el('code', { text: r.subject?.reference || '—' })
+                render: (r) => {
+                  const patient = byRef.get(r.subject?.reference || '');
+                  const line = patientLine(patient);
+                  return line ? el('strong', { text: line }) : el('span', { text: 'Unknown patient' });
+                }
               },
               incoming
                 ? {
                     key: 'from',
                     label: 'From',
-                    render: (r) => el('code', { text: r.requester?.reference || '—' })
+                    render: (r) => orgCell(r.requester?.reference)
                   }
                 : {
                     key: 'to',
                     label: 'To',
-                    render: (r) => el('code', { text: r.performer?.[0]?.reference || '—' })
+                    render: (r) => orgCell(r.performer?.[0]?.reference)
                   },
               { key: 'authoredOn', label: 'Authored', render: (r) => shortDate(r.authoredOn) },
               { key: 'actions', label: '', render: (r) => link('Open', `#/referrals/${r.id}`) }
@@ -456,8 +473,17 @@ export const detail = {
 
       let sr;
       let task;
+      let patient;
+      let byRef = new Map();
       try {
-        sr = known.serviceRequest || (await fhir.read('ServiceRequest', id));
+        // A lifecycle action hands back the ServiceRequest it already holds; only the
+        // Patient still has to be fetched in that case.
+        if (known.serviceRequest) {
+          sr = known.serviceRequest;
+          patient = known.patient !== undefined ? known.patient : await wf.patientOf(sr);
+        } else {
+          ({ serviceRequest: sr, patient, byRef } = await wf.referralWithPatient(id));
+        }
         task = known.task !== undefined ? known.task : await wf.taskForServiceRequest(id);
       } catch (err) {
         host.replaceChildren(
@@ -474,6 +500,19 @@ export const detail = {
       const myFacilityId = state.get('myFacilityId');
       const mineToAct = Boolean(myFacilityId) && performer === `Organization/${myFacilityId}`;
 
+      /**
+       * A reference rendered as words. Anything the search already included resolves
+       * instantly; the rest is read and swapped in, so the card never shows `Type/id`.
+       */
+      const nameCell = (reference) => {
+        if (!reference) return '';
+        const node = el('span', { text: 'Loading…' });
+        wf.labelFor(reference, byRef).then((label) => {
+          node.textContent = label || 'Not available';
+        });
+        return node;
+      };
+
       const busy = (on) =>
         host.querySelectorAll('.lifecycle button').forEach((b) => {
           b.disabled = on;
@@ -482,9 +521,10 @@ export const detail = {
       const act = async (label, fn) => {
         busy(true);
         try {
-          const known = await fn();
+          const result = await fn();
           toast(`${label} done`, 'ok');
-          await draw(known);
+          // Carry the Patient we already have, so a lifecycle step costs no extra read.
+          await draw({ patient, ...result });
         } catch (err) {
           host.append(errorBox(err));
           busy(false);
@@ -494,10 +534,16 @@ export const detail = {
       replace(
         host,
         pageHeader(
-          sr.requisition?.value || `ServiceRequest/${id}`,
-          `ServiceRequest/${id}${task ? ` · Task/${task.id}` : ' · no Task found'}`,
+          sr.requisition?.value || 'Referral',
           [
-            link('Patient', `#/patients/${(sr.subject?.reference || '').split('/')[1] || ''}`),
+            patient ? `For ${patientLine(patient)}` : 'Patient unknown',
+            sr.authoredOn ? `referred ${shortDate(sr.authoredOn)}` : '',
+            task ? '' : 'no lifecycle Task found'
+          ]
+            .filter(Boolean)
+            .join(' · '),
+          [
+            link('Open patient record', `#/patients/${(sr.subject?.reference || '').split('/')[1] || ''}`),
             button('Delete referral', {
               variant: 'danger',
               onClick: async () => {
@@ -527,9 +573,9 @@ export const detail = {
           el('h2', { text: 'Lifecycle' }),
           progressStrip(TASK_FLOW, status),
           el('p', { class: 'muted' }, [
-            'Task status: ',
+            'Handling: ',
             statusPill(status, TASK_FLOW),
-            ' · ServiceRequest status: ',
+            ' · Referral: ',
             statusPill(sr.status)
           ]),
           !task
@@ -544,7 +590,7 @@ export const detail = {
                   el('strong', { text: 'This referral is not yours to action.' }),
                   el('p', {}, [
                     'It was sent to ',
-                    el('code', { text: performer || 'no facility' }),
+                    performer ? nameCell(performer) : el('span', { text: 'no facility' }),
                     myFacilityId
                       ? ', not to your facility. That facility receives, accepts and completes it.'
                       : '. Set My facility in Settings to action the referrals sent to you.'
@@ -585,28 +631,35 @@ export const detail = {
 
         el('section', { class: 'card' }, [
           el('h2', { text: 'Referral detail' }),
-          el('dl', { class: 'kv' }, [
-            el('dt', { text: 'Priority' }),
-            el('dd', { text: sr.priority || '—' }),
-            el('dt', { text: 'Category' }),
-            el('dd', { text: sr.category?.[0]?.text || '—' }),
-            el('dt', { text: 'Reason' }),
-            el('dd', { text: sr.reasonCode?.[0]?.text || '—' }),
-            el('dt', { text: 'Requester' }),
-            el('dd', {}, [el('code', { text: sr.requester?.reference || '—' })]),
-            el('dt', { text: 'Performer' }),
-            el('dd', {}, [el('code', { text: sr.performer?.[0]?.reference || '—' })]),
-            el('dt', { text: 'Condition' }),
-            el('dd', {}, [el('code', { text: sr.reasonReference?.[0]?.reference || '—' })]),
-            el('dt', { text: 'Supporting observation' }),
-            el('dd', {}, [el('code', { text: sr.supportingInfo?.[0]?.reference || '—' })]),
-            el('dt', { text: 'Authored' }),
-            el('dd', { text: shortDate(sr.authoredOn) })
+          kvList([
+            ['Priority', sr.priority],
+            ['Category', sr.category?.[0]?.text || sr.category?.[0]?.coding?.[0]?.display],
+            ['Reason', sr.reasonCode?.[0]?.text || sr.reasonCode?.[0]?.coding?.[0]?.display],
+            ['Referred by', nameCell(sr.requester?.reference)],
+            ['Referred to', nameCell(sr.performer?.[0]?.reference)],
+            ['Condition', nameCell(sr.reasonReference?.[0]?.reference)],
+            ['Supporting observation', nameCell(sr.supportingInfo?.[0]?.reference)],
+            ['Authored', sr.authoredOn ? shortDate(sr.authoredOn) : '']
           ]),
           sr.note?.length
             ? el('blockquote', { class: 'note', text: sr.note.map((n) => n.text).join('\n') })
             : null
         ]),
+
+        // The whole Patient, so triage does not need a second page to know who this is.
+        patient
+          ? demographics(patient, { title: `Patient — ${patientLine(patient)}` })
+          : el('section', { class: 'card' }, [
+              el('h2', { text: 'Patient' }),
+              el('p', { class: 'muted' }, [
+                'Could not read ',
+                el('code', { text: sr.subject?.reference || 'the subject' }),
+                '.'
+              ])
+            ]),
+
+        // Loads on its own, so a slow Observation search does not delay the lifecycle card.
+        patient ? vitalsCard(patient.id) : null,
 
         task
           ? el('section', { class: 'card' }, [
@@ -617,12 +670,13 @@ export const detail = {
                 (task.note || []).map((n) => el('li', { text: n.text }))
               ),
               task.owner
-                ? el('p', { class: 'muted' }, ['Owner: ', el('code', { text: task.owner.reference })])
+                ? el('p', { class: 'muted' }, ['Handled by: ', nameCell(task.owner.reference)])
                 : null,
               task.output?.length
                 ? el('p', { class: 'muted' }, [
-                    'Output: ',
-                    el('code', { text: task.output[0].valueReference?.reference || '—' })
+                    'Completion record: ',
+                    nameCell(task.output[0].valueReference?.reference) ||
+                      el('span', { text: 'none' })
                   ])
                 : null
             ])
@@ -631,7 +685,8 @@ export const detail = {
         el('section', { class: 'card' }, [
           el('h2', { text: 'Stored resources' }),
           jsonView(sr, `GET /ServiceRequest/${id}`),
-          task ? jsonView(task, `GET /Task/${task.id}`) : null
+          task ? jsonView(task, `GET /Task/${task.id}`) : null,
+          patient ? jsonView(patient, `GET /Patient/${patient.id}`) : null
         ])
       );
     }

@@ -290,6 +290,34 @@ export function table(columns, rows, opts = {}) {
   ]);
 }
 
+/**
+ * Definition list from `[label, value]` pairs. Empty values (and empty array members)
+ * are dropped rather than shown as '—', so the list reflects what the resource states.
+ * A value may be a string, an array of strings, or a DOM node.
+ *
+ * @param {[string, any][]} entries
+ */
+export function kvList(entries, opts = {}) {
+  const rows = entries
+    .filter(Boolean)
+    .map(([label, value]) => [label, Array.isArray(value) ? value.filter(Boolean) : value])
+    .filter(([, value]) => (Array.isArray(value) ? value.length : Boolean(value)));
+
+  const dl = el('dl', { class: `kv ${opts.class || ''}`.trim() });
+  rows.forEach(([label, value]) => {
+    const cell = (v) => (v?.nodeType ? v : document.createTextNode(String(v)));
+    dl.append(
+      el('dt', { text: label }),
+      el(
+        'dd',
+        {},
+        Array.isArray(value) ? value.map((v) => el('div', {}, [cell(v)])) : [cell(value)]
+      )
+    );
+  });
+  return dl;
+}
+
 export function jsonView(value, label = 'JSON') {
   return el('details', { class: 'json' }, [
     el('summary', { text: label }),

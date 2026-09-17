@@ -1,7 +1,7 @@
 import * as fhir from '../fhir.js';
 import * as tpl from '../templates.js';
 import * as wf from '../workflow.js';
-import { SYSTEMS, PROFILES, GENDERS, PSGC_FALLBACK, PSGC_EXTENSIONS } from '../config.js';
+import { SYSTEMS, PROFILES, GENDERS, PSGC_FALLBACK } from '../config.js';
 import { state } from '../state.js';
 import { go } from '../router.js';
 import {
@@ -26,6 +26,7 @@ import {
   shortDate,
   confirmDialog
 } from '../ui.js';
+import { demographics, patientSubline, psgcFromResource, vitalsCard } from '../patientCard.js';
 
 // ---- list ----
 
@@ -84,10 +85,9 @@ export const list = {
               { key: 'birthDate', label: 'Birth date' },
               {
                 key: 'identifier',
-                label: 'Training ID',
-                render: (r) => el('code', { text: identifierOf(r, SYSTEMS.patient) || '—' })
+                label: 'Patient number',
+                render: (r) => el('span', { text: identifierOf(r, SYSTEMS.patient) || '—' })
               },
-              { key: 'id', label: 'Logical ID', render: (r) => el('code', { text: r.id }) },
               {
                 key: 'updated',
                 label: 'Updated',
@@ -166,17 +166,6 @@ function readPsgc(data) {
   };
 }
 
-function psgcFromResource(resource) {
-  const exts = resource?.address?.[0]?.extension || [];
-  const at = (url) => exts.find((e) => e.url === url)?.valueCoding;
-  return {
-    region: at(PSGC_EXTENSIONS.region),
-    province: at(PSGC_EXTENSIONS.province),
-    cityMunicipality: at(PSGC_EXTENSIONS.cityMunicipality),
-    barangay: at(PSGC_EXTENSIONS.barangay)
-  };
-}
-
 function patientFields(resource) {
   const name = resource?.name?.[0] || {};
   const phone = resource?.telecom?.find((t) => t.system === 'phone')?.value;
@@ -215,136 +204,7 @@ function toResource(data) {
   return tpl.patient({ ...data, address: readPsgc(data) });
 }
 
-// ---- demographics summary ----
-
-/** Whole years at `on` (default today), or '' when there is no birth date. */
-function ageFrom(birthDate, on = new Date()) {
-  if (!birthDate) return '';
-  const born = new Date(birthDate);
-  if (Number.isNaN(born.getTime())) return '';
-  let years = on.getFullYear() - born.getFullYear();
-  const monthDelta = on.getMonth() - born.getMonth();
-  if (monthDelta < 0 || (monthDelta === 0 && on.getDate() < born.getDate())) years -= 1;
-  return years >= 0 ? `${years} yr` : '';
-}
-
-function addressText(resource) {
-  const a = resource?.address?.[0];
-  if (!a) return '';
-  const psgc = psgcFromResource(resource);
-  const place = [psgc.barangay, psgc.cityMunicipality, psgc.province, psgc.region]
-    .map((c) => c?.display)
-    .filter(Boolean)
-    .join(', ');
-  return [a.line?.join(', '), place, a.postalCode, a.country].filter(Boolean).join(' · ');
-}
-
-/** Every identifier the resource carries, not just the training one. */
-function identifierList(resource) {
-  return (resource?.identifier || []).map((i) =>
-    `${i.value || '—'}${i.system ? ` (${i.system})` : ''}`
-  );
-}
-
-/**
- * Definition list of everything the Patient resource states. Empty fields are dropped
- * rather than shown as '—', so the card reflects what the CDR actually holds.
- */
-function demographics(resource) {
-  const name = resource?.name?.[0] || {};
-  const contacts = (resource?.telecom || []).map(
-    (t) => `${t.value}${t.use ? ` (${t.use})` : ''} — ${t.system}`
-  );
-  const deceased = resource?.deceasedDateTime
-    ? `Yes — ${resource.deceasedDateTime}`
-    : resource?.deceasedBoolean === true
-      ? 'Yes'
-      : '';
-
-  const entries = [
-    ['Full name', humanName(resource)],
-    ['Name use', name.use],
-    ['Gender', resource?.gender],
-    ['Birth date', [resource?.birthDate, ageFrom(resource?.birthDate)].filter(Boolean).join(' · ')],
-    ['Active', resource?.active === false ? 'No' : 'Yes'],
-    ['Deceased', deceased],
-    ['Marital status', resource?.maritalStatus?.text || resource?.maritalStatus?.coding?.[0]?.display],
-    ['Identifiers', identifierList(resource)],
-    ['Contact', contacts],
-    ['Address', addressText(resource)],
-    ['Language', (resource?.communication || []).map((c) => c.language?.text || c.language?.coding?.[0]?.display)],
-    ['Managing organization', resource?.managingOrganization?.reference],
-    ['General practitioner', (resource?.generalPractitioner || []).map((g) => g.reference)],
-    ['Profile', resource?.meta?.profile || []],
-    ['Team tag', (resource?.meta?.tag || []).map((t) => t.code)],
-    ['Last updated', shortDate(resource?.meta?.lastUpdated)]
-  ];
-
-  const rows = entries
-    .map(([label, value]) => [label, Array.isArray(value) ? value.filter(Boolean) : value])
-    .filter(([, value]) => (Array.isArray(value) ? value.length : Boolean(value)));
-
-  const dl = el('dl', { class: 'kv' });
-  rows.forEach(([label, value]) => {
-    dl.append(
-      el('dt', { text: label }),
-      el(
-        'dd',
-        {},
-        Array.isArray(value)
-          ? value.map((v) => el('div', { text: v }))
-          : [document.createTextNode(value)]
-      )
-    );
-  });
-
-  // Anything profile-specific the IG adds (PWD type, indigenous group, …) lives in
-  // extensions; list them raw rather than silently dropping them.
-  const extensions = resource?.extension || [];
-  return el('section', { class: 'card' }, [
-    el('h2', { text: 'Demographics' }),
-    dl,
-    extensions.length ? jsonView(extensions, `${extensions.length} extension(s)`) : null
-  ]);
-}
-
-// ---- vital signs + full record ----
-
-function vitalsCard(patientId) {
-  const host = el('section', { class: 'card' }, [
-    el('h2', { text: 'Vital signs' }),
-    spinner('Loading vital-signs observations…')
-  ]);
-
-  wf.vitalSigns(patientId)
-    .then((observations) => {
-      const rows = observations.flatMap(wf.vitalRows);
-      replace(
-        host,
-        el('h2', { text: 'Vital signs' }),
-        el('p', {
-          class: 'muted',
-          text: `${observations.length} observation(s) · Observation?patient=${patientId}&category=vital-signs`
-        }),
-        table(
-          [
-            { key: 'label', label: 'Measurement' },
-            { key: 'value', label: 'Value' },
-            { key: 'panel', label: 'Panel' },
-            { key: 'status', label: 'Status', render: (r) => statusPill(r.status) },
-            { key: 'when', label: 'Taken', render: (r) => shortDate(r.when) },
-            { key: 'id', label: 'Observation', render: (r) => el('code', { text: r.id }) }
-          ],
-          rows,
-          { emptyText: 'No vital-signs observations recorded for this patient.' }
-        ),
-        observations.length ? jsonView(observations, 'Raw Observations') : null
-      );
-    })
-    .catch((err) => replace(host, el('h2', { text: 'Vital signs' }), errorBox(err)));
-
-  return host;
-}
+// ---- full record ----
 
 function everythingCard(patientId) {
   const host = el('section', { class: 'card' }, [
@@ -501,7 +361,7 @@ export const detail = {
 
       host.replaceChildren();
       host.append(
-        pageHeader(humanName(resource), `Patient/${id} · version ${resource.meta?.versionId || '—'}`, [
+        pageHeader(humanName(resource), patientSubline(resource) || 'Patient record', [
           link('Referrals for this patient', `#/referrals?patient=${id}`),
           button('Use in demo', {
             onClick: () => {

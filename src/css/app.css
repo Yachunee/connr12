@@ -247,6 +247,28 @@ a { color: var(--accent-ink); }
 /* A dd holding several values (identifiers, telecom) stacks them. */
 .kv dd > div + div { margin-top: var(--space-1); }
 
+/* Inline patient photo and server-rendered narrative in the demographics card. */
+.photo { margin: 0; }
+.photo img {
+  max-width: 10rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-m);
+}
+
+.narrative {
+  font-size: 0.92rem;
+  overflow-x: auto;
+}
+.narrative table { border-collapse: collapse; }
+.narrative td, .narrative th {
+  border: 1px solid var(--line);
+  padding: var(--space-1) var(--space-2);
+  text-align: left;
+}
+
+/* The table cell that pairs a resolved name with its reference. */
+.table code.muted { font-size: 0.78rem; }
+
 /* One resource type inside the patient's full record. */
 .record-group + .record-group {
   margin-top: var(--space-5);

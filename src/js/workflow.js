@@ -24,7 +24,7 @@ export async function referralOptions() {
   ]);
 
   const included = fhir.entries(roleBundle);
-  const byRef = new Map(included.map((r) => [`${r.resourceType}/${r.id}`, r]));
+  const byRef = fhir.byReference(included);
   const nameOf = (resource) => {
     const n = resource?.name?.[0];
     if (!n) return resource?.name || '';
@@ -112,13 +112,132 @@ export async function searchFacilities(text = '') {
   return fhir.entries(bundle);
 }
 
+/**
+ * The subject, requester and performer travel with every referral search, so a row can
+ * show who the patient is without a read per row.
+ */
+export const REFERRAL_INCLUDES = [
+  'ServiceRequest:subject',
+  'ServiceRequest:requester',
+  'ServiceRequest:performer'
+];
+
 /** Referrals sent *to* my facility, by anyone. Unscoped — other teams created them. */
 export async function incomingReferrals(myFacilityId, params = {}) {
   return fhir.search(
     'ServiceRequest',
-    { performer: `Organization/${myFacilityId}`, _count: 20, _sort: '-_lastUpdated', ...params },
+    {
+      performer: `Organization/${myFacilityId}`,
+      _count: 20,
+      _sort: '-_lastUpdated',
+      _include: REFERRAL_INCLUDES,
+      ...params
+    },
     { includeAll: true }
   );
+}
+
+/**
+ * One referral plus its Patient in a single request. Unscoped, because the detail page is
+ * reachable for another team's referral. Falls back to a plain read when the server
+ * ignores `_id`/`_include`, in which case the Patient is read separately.
+ */
+export async function referralWithPatient(id) {
+  try {
+    const bundle = await fhir.search(
+      'ServiceRequest',
+      { _id: id, _include: REFERRAL_INCLUDES },
+      { includeAll: true }
+    );
+    const [serviceRequest] = fhir.matches(bundle);
+    if (serviceRequest) {
+      const byRef = fhir.byReference(fhir.included(bundle));
+      const patient = byRef.get(serviceRequest.subject?.reference) || null;
+      return { serviceRequest, patient: patient || (await patientOf(serviceRequest)), byRef };
+    }
+  } catch {
+    // Fall through to the plain read below — the detail page must still work.
+  }
+  const serviceRequest = await fhir.read('ServiceRequest', id);
+  return { serviceRequest, patient: await patientOf(serviceRequest), byRef: new Map() };
+}
+
+/**
+ * One readable line for any resource — a person's name, a facility's name, the text of a
+ * code. Used wherever a screen would otherwise show `Organization/24729`.
+ */
+export function describe(resource) {
+  if (!resource) return '';
+  const name = resource.name;
+  if (Array.isArray(name) && name.length) {
+    const n = name[0];
+    return (
+      n.text || [n.prefix?.join(' '), n.given?.join(' '), n.family].filter(Boolean).join(' ')
+    );
+  }
+  if (typeof name === 'string') return name;
+  return (
+    codeText(resource.code) ||
+    codeText(resource.type?.[0]) ||
+    codeText(resource.category?.[0]) ||
+    resource.description ||
+    resource.title ||
+    ''
+  );
+}
+
+/**
+ * Turn a reference into words. Anything already in `byRef` (an `_include`d resource) costs
+ * nothing; the rest is read. A PractitionerRole is expanded to "Dr. Rosa Demo — facility",
+ * because the role on its own says nothing a user would recognise.
+ */
+export async function labelFor(reference, byRef = new Map()) {
+  if (!reference) return '';
+  let resource = byRef.get(reference);
+  if (!resource) {
+    const [type, id] = reference.split('/');
+    if (!type || !id) return '';
+    try {
+      resource = await fhir.read(type, id);
+    } catch {
+      return '';
+    }
+  }
+
+  if (resource.resourceType === 'PractitionerRole') {
+    const [practitioner, organization] = await Promise.all([
+      labelFor(resource.practitioner?.reference, byRef),
+      labelFor(resource.organization?.reference, byRef)
+    ]);
+    const role = codeText(resource.code?.[0]);
+    const who = practitioner || role || '';
+    return organization ? [who, organization].filter(Boolean).join(' — ') : who;
+  }
+
+  if (resource.resourceType === 'Observation') {
+    // quantityText yields '—' when there is nothing to show; a panel carries its numbers
+    // on the components instead.
+    const real = (text) => (text && text !== '—' ? text : '');
+    const value = real(quantityText(resource));
+    const parts = (resource.component || [])
+      .map((c) => `${codeText(c.code)} ${real(quantityText(c))}`.trim())
+      .filter(Boolean);
+    const body = value || parts.join(', ');
+    return [describe(resource), body].filter(Boolean).join(' — ');
+  }
+
+  return describe(resource);
+}
+
+/** Read the Patient a ServiceRequest points at, or null when there is none to read. */
+export async function patientOf(serviceRequest) {
+  const patientId = (serviceRequest?.subject?.reference || '').split('/')[1];
+  if (!patientId) return null;
+  try {
+    return await fhir.read('Patient', patientId);
+  } catch {
+    return null;
+  }
 }
 
 /** Steps 03B.06 -> 03B.09, run one at a time so each response is visible. */

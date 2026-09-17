@@ -162,9 +162,30 @@ export async function search(type, params = {}, { includeAll = false } = {}) {
   return resource;
 }
 
-/** Flatten a searchset Bundle to its resources. */
+/** Flatten a searchset Bundle to its resources, `_include`d ones among them. */
 export function entries(bundle) {
   return (bundle?.entry || []).map((e) => e.resource).filter(Boolean);
+}
+
+/** Only the resources the search itself matched — what a result table should list. */
+export function matches(bundle) {
+  return (bundle?.entry || [])
+    .filter((e) => e.search?.mode !== 'include')
+    .map((e) => e.resource)
+    .filter(Boolean);
+}
+
+/** Only the resources pulled in by `_include`, for joining onto the matches. */
+export function included(bundle) {
+  return (bundle?.entry || [])
+    .filter((e) => e.search?.mode === 'include')
+    .map((e) => e.resource)
+    .filter(Boolean);
+}
+
+/** Map of `Type/id` -> resource, so a `subject.reference` can be looked up directly. */
+export function byReference(resources) {
+  return new Map((resources || []).map((r) => [`${r.resourceType}/${r.id}`, r]));
 }
 
 export async function read(type, id) {
