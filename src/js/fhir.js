@@ -271,6 +271,28 @@ export async function expand(valueSetUrl) {
   return resource?.expansion?.contains || [];
 }
 
+/**
+ * A whole CodeSystem from the terminology server, by canonical URL and version. The PSGC
+ * selects read their options from it (collection folder 02).
+ */
+export async function codeSystem(url, version) {
+  const base = state.get('txBase');
+  const { resource: bundle } = await request('GET', 'CodeSystem', {
+    base,
+    query: { url, version, _elements: 'id,url,version' },
+    label: `CodeSystem ${url}|${version}`
+  });
+  const hit = matches(bundle)[0];
+  if (!hit?.id) return null;
+  // The search result carries no `concept` — the terminology server keeps codes in its
+  // own tables — so the hierarchy comes from reading the resource itself.
+  const { resource } = await request('GET', `CodeSystem/${hit.id}`, {
+    base,
+    label: `Read CodeSystem/${hit.id}`
+  });
+  return resource || null;
+}
+
 /** CodeSystem `$lookup`, used for the PSGC selects (collection 02.11-02.13). */
 export async function lookup(system, code, property) {
   const { resource } = await request('GET', 'CodeSystem/$lookup', {

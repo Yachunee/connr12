@@ -1,7 +1,14 @@
 import * as fhir from '../fhir.js';
 import * as tpl from '../templates.js';
 import * as wf from '../workflow.js';
-import { SYSTEMS, PROFILES, GENDERS, PSGC_FALLBACK } from '../config.js';
+import { SYSTEMS, PROFILES, GENDERS } from '../config.js';
+import {
+  loadPsgc,
+  psgcOptions,
+  defaultSelection,
+  resolveSelection,
+  codingsFor
+} from '../psgc.js';
 import { state } from '../state.js';
 import { go } from '../router.js';
 import {
@@ -118,52 +125,95 @@ export const list = {
 
 // ---- PSGC selects ----
 
-function psgcFields(address = {}) {
-  const opt = (key) =>
-    PSGC_FALLBACK[key].map((c) => ({ value: c.code, label: `${c.display} (${c.code})` }));
+// The tree the form is currently offering. Loaded once per view before the form is built,
+// so the synchronous field spec and the JSON preview can both read it.
+let psgcTree = null;
+
+// Form field name <-> tree step, in cascade order.
+const PSGC_STEPS = [
+  ['psgcRegion', 'region', 'Region'],
+  ['psgcProvince', 'province', 'Province / HUC'],
+  ['psgcCity', 'cityMunicipality', 'City / Municipality'],
+  ['psgcBarangay', 'barangay', 'Barangay']
+];
+
+const psgcOption = (node) => ({ value: node.code, label: `${node.display} (${node.code})` });
+
+/** The codes an existing address states, narrowed to what the loaded tree still offers. */
+function psgcSelectionOf(resource) {
+  if (!resource) return defaultSelection(psgcTree);
+  const codings = psgcFromResource(resource);
+  return resolveSelection(psgcTree, {
+    region: codings.region?.code,
+    province: codings.province?.code,
+    cityMunicipality: codings.cityMunicipality?.code,
+    barangay: codings.barangay?.code
+  });
+}
+
+function psgcFields(selection) {
+  const options = psgcOptions(psgcTree, selection);
   return [
     { type: 'section', label: 'Address (PSGC)' },
-    {
-      name: 'psgcRegion',
-      label: 'Region',
+    ...PSGC_STEPS.map(([name, step, label]) => ({
+      name,
+      label,
       type: 'select',
-      options: opt('region'),
-      value: address.region?.code
-    },
-    {
-      name: 'psgcProvince',
-      label: 'Province',
-      type: 'select',
-      options: opt('province'),
-      value: address.province?.code
-    },
-    {
-      name: 'psgcCity',
-      label: 'City / Municipality',
-      type: 'select',
-      options: opt('cityMunicipality'),
-      value: address.cityMunicipality?.code
-    },
-    {
-      name: 'psgcBarangay',
-      label: 'Barangay',
-      type: 'select',
-      options: opt('barangay'),
-      value: address.barangay?.code,
-      hint: 'Verified against the terminology server with CodeSystem/$lookup (02.13).'
-    }
+      options: options[step].map(psgcOption),
+      value: selection[step],
+      hint:
+        step === 'barangay'
+          ? `PSGC ${psgcTree.version} from the ${psgcTree.source} (collection 02.11–02.13).`
+          : undefined
+    }))
   ];
 }
 
-function readPsgc(data) {
-  const find = (key, code) =>
-    PSGC_FALLBACK[key].find((c) => c.code === code) || PSGC_FALLBACK[key][0];
-  return {
-    region: find('region', data.psgcRegion),
-    province: find('province', data.psgcProvince),
-    cityMunicipality: find('cityMunicipality', data.psgcCity),
-    barangay: find('barangay', data.psgcBarangay)
+/**
+ * Keep the four selects consistent: choosing a province refills the cities below it, and
+ * the barangays below that, instead of leaving a place from another province selected.
+ */
+function wirePsgcCascade(formNode) {
+  const selectOf = (name) => formNode.querySelector(`select[name="${name}"]`);
+
+  const refill = (fromIndex) => {
+    const selection = {};
+    PSGC_STEPS.forEach(([name, step]) => {
+      selection[step] = selectOf(name)?.value || '';
+    });
+
+    PSGC_STEPS.forEach(([name, step], i) => {
+      if (i <= fromIndex) return;
+      const select = selectOf(name);
+      if (!select) return;
+      const options = psgcOptions(psgcTree, selection)[step];
+      const keep = options.some((o) => o.code === select.value) ? select.value : options[0]?.code;
+      select.replaceChildren(
+        ...options.map((o) =>
+          el('option', { value: o.code, selected: o.code === keep }, `${o.display} (${o.code})`)
+        )
+      );
+      select.value = keep || '';
+      selection[step] = select.value;
+    });
   };
+
+  PSGC_STEPS.forEach(([name], i) => {
+    selectOf(name)?.addEventListener('change', () => {
+      refill(i);
+      // The JSON preview and any other listener read the form after the refill.
+      formNode.dispatchEvent(new Event('change', { bubbles: false }));
+    });
+  });
+}
+
+function readPsgc(data) {
+  return codingsFor(psgcTree, {
+    region: data.psgcRegion,
+    province: data.psgcProvince,
+    cityMunicipality: data.psgcCity,
+    barangay: data.psgcBarangay
+  });
 }
 
 function patientFields(resource) {
@@ -189,7 +239,7 @@ function patientFields(resource) {
     { type: 'section', label: 'Contact' },
     { name: 'phone', label: 'Mobile', value: phone ?? '+639000000000' },
     { name: 'email', label: 'Email', type: 'email', value: email ?? '' },
-    ...psgcFields(psgcFromResource(resource)),
+    ...psgcFields(psgcSelectionOf(resource)),
     {
       name: 'addressLine',
       label: 'Street address',
@@ -290,6 +340,9 @@ export const create = {
       ' Run $validate against the profile before creating (collection 03.01)'
     ]);
 
+    // Every place the terminology server knows, not just the collection's one barangay.
+    psgcTree = await loadPsgc();
+
     const node = form(patientFields(null), {
       submitLabel: 'Create patient',
       extra: validateToggle,
@@ -331,6 +384,7 @@ export const create = {
     };
     node.addEventListener('input', refresh);
     node.addEventListener('change', refresh);
+    wirePsgcCascade(node);
 
     outlet.append(el('section', { class: 'card' }, [node]), messages, preview);
     refresh();
@@ -353,7 +407,10 @@ export const detail = {
 
       let resource;
       try {
-        resource = known || (await fhir.read('Patient', id));
+        [resource, psgcTree] = await Promise.all([
+          known || fhir.read('Patient', id),
+          loadPsgc()
+        ]);
       } catch (err) {
         host.replaceChildren(pageHeader('Patient', id, [link('Back', '#/patients')]), errorBox(err));
         return;
@@ -403,6 +460,7 @@ export const detail = {
           }
         }
       });
+      wirePsgcCascade(node);
 
       // The two cards below fetch on their own and swap their contents in — a slow or
       // unsupported compartment search must not hold up the demographics and the edit form.

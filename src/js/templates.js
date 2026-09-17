@@ -2,7 +2,14 @@
 // docs/api/collection/R12_PHeRef_Guided_Connectathon_v2.postman_collection.json,
 // with `{{variables}}` replaced by arguments.
 
-import { SYSTEMS, PROFILES, PSGC_EXTENSIONS, PSGC_FALLBACK, TEAM_TAG_SYSTEM } from './config.js';
+import {
+  SYSTEMS,
+  PROFILES,
+  PSGC_EXTENSIONS,
+  PSGC_FALLBACK,
+  PSGC_VERSION,
+  TEAM_TAG_SYSTEM
+} from './config.js';
 import { state, now, uuidv4 } from './state.js';
 
 const pick = (v, fallback) => (v === undefined || v === '' ? fallback : v);
@@ -29,11 +36,19 @@ function addressExtensions(a = {}) {
   ];
   return parts
     .map(([key, coding]) => {
-      const c = coding || PSGC_FALLBACK[key][0];
+      // `null` means the caller deliberately has no code for this level (a highly
+      // urbanised city has no province); only `undefined` falls back to the training chain.
+      const c = coding === null ? null : coding || PSGC_FALLBACK[key][0];
       if (!c || !c.code) return null;
       return {
         url: PSGC_EXTENSIONS[key],
-        valueCoding: { system: SYSTEMS.psgc, code: c.code, display: c.display }
+        valueCoding: {
+          system: SYSTEMS.psgc,
+          // Which PSGC edition the code came from — codes are reused across editions.
+          version: c.version || PSGC_VERSION,
+          code: c.code,
+          display: c.display
+        }
       };
     })
     .filter(Boolean);

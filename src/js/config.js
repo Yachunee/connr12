@@ -66,6 +66,11 @@ export const PSGC_EXTENSIONS = {
   barangay: 'https://fhir.doh.gov.ph/phcore/StructureDefinition/barangay'
 };
 
+// The PSGC edition the address selects offer. `psgc-r12-mini` on the terminology server
+// publishes Region XII down to barangay at this version; the full 43k-code PSGC there is
+// still on 1Q-2026, so the version is pinned rather than left to the server's default.
+export const PSGC_VERSION = '2Q-2026';
+
 // Offline fallback for the PSGC selects. The terminology server is queried first;
 // these are the exact values the collection hardcodes for the Region XII training case.
 export const PSGC_FALLBACK = {
